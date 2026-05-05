@@ -1,0 +1,22 @@
+classapp:
+  login_url: https://classapp.com.br/login
+  messages_url: https://classapp.com.br/entities/YOUR_ENTITY_ID/messages
+  email: your@email.com
+  password: yourpassword
+
+telegram:
+  # 1. Message @BotFather on Telegram → /newbot → follow steps → copy the token here
+  bot_token: "123456789:AAABBBCCC..."
+  # 2. Start a chat with your bot, then run: python main.py get-chat-id
+  #    It will print your chat_id automatically.
+  chat_id: "000000000"
+
+schedule:
+  # How often to check, in hours. 12 = twice a day. Min: 0.5 (30 minutes)
+  interval_hours: 12
+
+filters:
+  # Leave empty to receive ALL messages.
+  # Add keywords to only receive messages whose subject contains any of them (case-insensitive).
+  # Example: keywords: ["prova", "reunião", "aviso", "recado"]
+  keywords: []

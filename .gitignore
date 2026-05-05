@@ -1,0 +1,22 @@
+# credentials and runtime state — never commit these
+app/config.yaml
+app/session.json
+app/state.json
+app/network_log.json
+app/detail_log.json
+app/notifier.log
+app/debug_*.png
+
+# python
+app/.venv/
+app/__pycache__/
+app/*.pyc
+__pycache__/
+*.pyc
+
+# docker data volume
+data/
+
+# local workspace
+.obsidian/
+.claude/

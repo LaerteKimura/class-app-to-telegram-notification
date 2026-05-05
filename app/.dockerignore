@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+session.json
+state.json
+network_log.json
+detail_log.json
+notifier.log
+debug_*.png
