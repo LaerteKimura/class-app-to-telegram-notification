@@ -60,6 +60,7 @@ def check_once(config: dict, headless: bool = True):
     logger.info(f"{len(messages)} total | {len(new)} new | {len(to_send)} match filter")
 
     if to_send:
+        to_send.reverse()  # send oldest first so newest appears last (bottom) in Telegram
         scraper.enrich_with_bodies(to_send)
 
     for msg in to_send:

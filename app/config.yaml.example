@@ -13,7 +13,7 @@ telegram:
 
 schedule:
   # How often to check, in hours. 12 = twice a day. Min: 0.5 (30 minutes)
-  interval_hours: 12
+  interval_hours: 4
 
 filters:
   # Leave empty to receive ALL messages.
