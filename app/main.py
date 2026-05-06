@@ -49,7 +49,7 @@ def check_once(config: dict, headless: bool = True):
 
     logger.info("Checking ClassApp for new messages…")
     try:
-        messages = scraper.get_messages(headless=headless)
+        messages = scraper.get_all_messages(headless=headless)
     except Exception as e:
         logger.error(f"Failed to fetch messages: {e}")
         return

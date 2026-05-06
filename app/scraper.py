@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from collections import defaultdict
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
@@ -16,10 +17,19 @@ GRAPHQL_HOST = "web.classapp.com.br/graphql"
 
 class ClassAppScraper:
     def __init__(self, config: dict):
-        self._login_url = config["classapp"]["login_url"]
-        self._messages_url = config["classapp"]["messages_url"]
-        self._email = config["classapp"]["email"]
-        self._password = config["classapp"]["password"]
+        cfg = config["classapp"]
+        self._login_url = cfg["login_url"]
+        self._email = cfg["email"]
+        self._password = cfg["password"]
+        # Support both old format (single messages_url) and new format (children list)
+        if "children" in cfg:
+            self._children = cfg["children"]
+        else:
+            self._children = [{"name": "", "messages_url": cfg["messages_url"]}]
+
+    @property
+    def _first_url(self) -> str:
+        return self._children[0]["messages_url"]
 
     # ------------------------------------------------------------------
     # Public
@@ -38,7 +48,7 @@ class ClassAppScraper:
             captured: list[dict] = []
             page.on("response", lambda r: self._capture_all_json(r, captured))
 
-            page.goto(self._messages_url)
+            page.goto(self._first_url)
 
             input("\nPress Enter when the messages page is loaded and you can see the list...")
 
@@ -68,7 +78,7 @@ class ClassAppScraper:
             captured: list[dict] = []
             page.on("response", lambda r: self._capture_all_json(r, captured))
 
-            page.goto(self._messages_url)
+            page.goto(self._first_url)
 
             input("\nClick a message to open it, then press Enter...")
 
@@ -82,58 +92,69 @@ class ClassAppScraper:
             context.storage_state(path=str(SESSION_FILE))
             browser.close()
 
-    def get_messages(self, headless: bool = True) -> list[dict]:
-        """Return the list of messages from the messages page (without bodies)."""
+    def get_all_messages(self, headless: bool = True) -> list[dict]:
+        """Return messages for all children in a single browser session."""
+        all_messages: list[dict] = []
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=headless)
             context = self._load_context(browser)
             page = context.new_page()
 
-            intercepted: list[dict] = []
-            page.on("response", lambda r: self._try_capture_messages(r, intercepted))
+            for child in self._children:
+                child_name = child.get("name", "")
+                messages_url = child["messages_url"]
+                intercepted: list[dict] = []
 
-            try:
-                page.goto(self._messages_url, timeout=30_000)
+                handler = lambda r, buf=intercepted: self._try_capture_messages(r, buf)
+                page.on("response", handler)
 
-                if self._needs_login(page):
-                    self._login(page)
-                    page.goto(self._messages_url, timeout=30_000)
+                try:
+                    page.goto(messages_url, timeout=30_000)
 
-                page.wait_for_load_state("networkidle", timeout=20_000)
-                page.wait_for_timeout(2_000)
+                    if self._needs_login(page):
+                        self._login(page)
+                        page.goto(messages_url, timeout=30_000)
 
-            except PlaywrightTimeout:
-                page.screenshot(path="debug_screenshot.png")
-                logger.warning("Page load timed out. Screenshot saved to debug_screenshot.png.")
-            except Exception:
-                page.screenshot(path="debug_screenshot.png")
-                raise
-            finally:
-                context.storage_state(path=str(SESSION_FILE))
-                browser.close()
+                    page.wait_for_load_state("networkidle", timeout=20_000)
+                    page.wait_for_timeout(2_000)
 
-        # Deduplicate — same message can appear for multiple children
-        seen_ids: set[str] = set()
-        unique: list[dict] = []
-        for m in intercepted:
-            if m["id"] not in seen_ids:
-                seen_ids.add(m["id"])
-                unique.append(m)
+                except PlaywrightTimeout:
+                    page.screenshot(path="debug_screenshot.png")
+                    logger.warning(f"[{child_name}] Page load timed out.")
+                except Exception:
+                    page.screenshot(path="debug_screenshot.png")
+                    raise
+                finally:
+                    page.remove_listener("response", handler)
 
-        if not unique:
-            logger.warning("No messages captured. Run 'python main.py setup' if this is the first run.")
-        else:
-            logger.info(f"Captured {len(unique)} unique messages.")
+                seen_ids: set[str] = set()
+                for m in intercepted:
+                    if m["id"] not in seen_ids:
+                        seen_ids.add(m["id"])
+                        m["child"] = child_name
+                        m["_list_url"] = messages_url
+                        all_messages.append(m)
 
-        return unique
+                if seen_ids:
+                    logger.info(f"[{child_name or 'child'}] Captured {len(seen_ids)} unique messages.")
+                else:
+                    logger.warning(f"[{child_name or 'child'}] No messages captured. Run 'python main.py setup' if this is the first run.")
+
+            context.storage_state(path=str(SESSION_FILE))
+            browser.close()
+
+        return all_messages
 
     def enrich_with_bodies(self, messages: list[dict]) -> None:
-        """Click each message in the list to trigger the detail load, capture the body.
-
-        Only called for new messages we intend to send, so typically 0–5 clicks.
-        """
+        """Click each message to capture body and images. Groups by child to avoid
+        unnecessary page navigation."""
         if not messages:
             return
+
+        groups: dict[str, list[dict]] = defaultdict(list)
+        for m in messages:
+            groups[m.get("_list_url", self._first_url)].append(m)
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -141,18 +162,16 @@ class ClassAppScraper:
             page = context.new_page()
 
             try:
-                # Load the messages list first
-                page.goto(self._messages_url, timeout=30_000)
-                if self._needs_login(page):
-                    self._login(page)
-                    page.goto(self._messages_url, timeout=30_000)
-                page.wait_for_load_state("networkidle", timeout=20_000)
-                page.wait_for_timeout(2_000)
+                for list_url, group in groups.items():
+                    page.goto(list_url, timeout=30_000)
+                    if self._needs_login(page):
+                        self._login(page)
+                        page.goto(list_url, timeout=30_000)
+                    page.wait_for_load_state("networkidle", timeout=20_000)
+                    page.wait_for_timeout(2_000)
 
-                list_url = page.url
-
-                for msg in messages:
-                    self._click_and_capture_body(page, msg, list_url)
+                    for msg in group:
+                        self._click_and_capture_body(page, msg, list_url)
             finally:
                 context.storage_state(path=str(SESSION_FILE))
                 browser.close()
@@ -168,7 +187,6 @@ class ClassAppScraper:
         msg["body"] = ""
         msg["images"] = []
 
-        # Capture image bytes from responses as the browser loads them naturally
         captured_images: list[bytes] = []
 
         def on_response(response):
@@ -182,7 +200,6 @@ class ClassAppScraper:
         clicked = False
 
         try:
-            # Try data-id attributes first
             for selector in [
                 f'[data-id="{target_id}"]',
                 f'[data-message-id="{target_id}"]',
@@ -193,7 +210,6 @@ class ClassAppScraper:
                     clicked = True
                     break
 
-            # Fall back: click by subject text
             if not clicked and subject:
                 try:
                     page.locator(f'text="{subject}"').first.click(timeout=5_000)
@@ -205,10 +221,8 @@ class ClassAppScraper:
                 logger.debug(f"Could not find message {target_id} in DOM")
                 return
 
-            # Wait for panel/modal and images to fully load
             page.wait_for_timeout(3_000)
 
-            # Save a screenshot for the first message to verify what opened
             screenshot = Path(__file__).parent / "debug_detail.png"
             if not screenshot.exists():
                 page.screenshot(path=str(screenshot))
@@ -217,7 +231,6 @@ class ClassAppScraper:
             msg["body"]   = self._extract_from_dom(page, subject)
             msg["images"] = list(captured_images)
 
-            # Close the panel
             page.keyboard.press("Escape")
             page.wait_for_timeout(500)
             if page.url != list_url:
@@ -251,7 +264,6 @@ class ClassAppScraper:
             """([subject]) => {
                 const subjectTrim = subject.trim();
 
-                // Collect lines from #MessageReplies so we know where to stop
                 const repliesEl = document.getElementById('MessageReplies');
                 const repliesLines = new Set(
                     repliesEl
@@ -264,14 +276,12 @@ class ClassAppScraper:
                     .map(l => l.trim())
                     .filter(Boolean);
 
-                // Last occurrence of the subject = the modal heading
                 let subjectIdx = -1;
                 for (let i = lines.length - 1; i >= 0; i--) {
                     if (lines[i] === subjectTrim) { subjectIdx = i; break; }
                 }
                 if (subjectIdx < 0) return '';
 
-                // Stop at the first line that belongs to MessageReplies OR the reply box
                 let endIdx = lines.length;
                 for (let i = subjectIdx + 1; i < lines.length; i++) {
                     const l = lines[i];
@@ -305,7 +315,6 @@ class ClassAppScraper:
         page.goto(self._login_url)
         page.wait_for_load_state("networkidle")
 
-        # Step 1: email → Continue
         email_selector = 'input[type="email"], input[name="email"], input[name="username"]'
         page.wait_for_selector(email_selector, timeout=10_000)
         page.fill(email_selector, self._email)
@@ -317,7 +326,6 @@ class ClassAppScraper:
             'button[type="submit"]'
         )
 
-        # Step 2: password → submit
         password_selector = 'input[type="password"], input[name="password"]'
         page.wait_for_selector(password_selector, timeout=10_000)
         page.fill(password_selector, self._password)
@@ -332,34 +340,6 @@ class ClassAppScraper:
         if self._needs_login(page):
             raise RuntimeError("Login failed. Check your email and password in config.yaml.")
         logger.info("Login successful.")
-
-    def _download_images(self, page, subject: str) -> list[bytes]:
-        """Extract content image URLs then download them via the authenticated session."""
-        urls = self._extract_images_from_dom(page, subject)
-        downloaded = []
-        for url in urls:
-            try:
-                resp = page.request.get(url, timeout=15_000)
-                if resp.ok:
-                    downloaded.append(resp.body())
-                    logger.debug(f"Downloaded image {len(downloaded)}: {len(resp.body())} bytes")
-                else:
-                    logger.debug(f"Image fetch failed ({resp.status}): {url}")
-            except Exception as e:
-                logger.debug(f"Image download error: {e}")
-        return downloaded
-
-    def _extract_images_from_dom(self, page, subject: str) -> list[str]:
-        """Return content image URLs — identified by data-action='open-media-item'."""
-        return page.evaluate(
-            """() => {
-                return Array.from(
-                    document.querySelectorAll('img[data-action="open-media-item"]')
-                )
-                .map(img => img.src)
-                .filter((src, idx, arr) => src && arr.indexOf(src) === idx);
-            }"""
-        )
 
     def _try_capture_messages(self, response, out: list):
         """Intercept ClassApp GraphQL responses and extract message list nodes."""
@@ -386,12 +366,10 @@ class ClassAppScraper:
         """
         inner = data.get("data", {})
 
-        # Primary: data.node.messages.nodes
         node = inner.get("node", {})
         node_entity_id = str(node.get("id", ""))
         nodes = node.get("messages", {}).get("nodes", [])
 
-        # Fallback: scan data.viewer.*.nodes for anything with "summary"
         if not nodes:
             for value in inner.get("viewer", {}).values():
                 if isinstance(value, dict):

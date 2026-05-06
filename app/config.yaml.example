@@ -1,8 +1,12 @@
 classapp:
   login_url: https://classapp.com.br/login
-  messages_url: https://classapp.com.br/entities/YOUR_ENTITY_ID/messages
   email: your@email.com
   password: yourpassword
+  children:
+    - name: Child One
+      messages_url: https://classapp.com.br/entities/ENTITY_ID_1/messages
+    - name: Child Two
+      messages_url: https://classapp.com.br/entities/ENTITY_ID_2/messages
 
 telegram:
   # 1. Message @BotFather on Telegram → /newbot → follow steps → copy the token here

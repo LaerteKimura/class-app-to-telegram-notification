@@ -21,8 +21,11 @@ class TelegramNotifier:
         body    = message.get("body", "")
         url     = message.get("url", "")
         images  = message.get("images", [])
+        child   = message.get("child", "")
 
         lines = [f"📚 *ClassApp - Nova Mensagem ({self._escape(date)})*", ""]
+        if child:
+            lines.append(f"*Para:* {self._escape(child)}")
         lines.append(f"*Assunto:* {self._escape(subject)}")
         if sender:
             lines.append(f"*De:* {self._escape(sender)}")
