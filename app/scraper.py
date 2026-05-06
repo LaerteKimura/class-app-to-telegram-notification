@@ -93,8 +93,12 @@ class ClassAppScraper:
             browser.close()
 
     def get_all_messages(self, headless: bool = True) -> list[dict]:
-        """Return messages for all children in a single browser session."""
-        all_messages: list[dict] = []
+        """Return messages for all children in a single browser session.
+
+        Messages that appear for more than one child are deduplicated and sent
+        without a child label. Messages specific to one child are labelled.
+        """
+        per_child: list[tuple[str, str, list[dict]]] = []  # (name, url, messages)
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=headless)
@@ -128,23 +132,40 @@ class ClassAppScraper:
                 finally:
                     page.remove_listener("response", handler)
 
-                seen_ids: set[str] = set()
+                seen: set[str] = set()
+                unique: list[dict] = []
                 for m in intercepted:
-                    if m["id"] not in seen_ids:
-                        seen_ids.add(m["id"])
-                        m["child"] = child_name
-                        m["_list_url"] = messages_url
-                        all_messages.append(m)
+                    if m["id"] not in seen:
+                        seen.add(m["id"])
+                        unique.append(m)
 
-                if seen_ids:
-                    logger.info(f"[{child_name or 'child'}] Captured {len(seen_ids)} unique messages.")
-                else:
-                    logger.warning(f"[{child_name or 'child'}] No messages captured. Run 'python main.py setup' if this is the first run.")
+                per_child.append((child_name, messages_url, unique))
+                logger.info(f"[{child_name or 'child'}] Captured {len(unique)} unique messages.")
 
             context.storage_state(path=str(SESSION_FILE))
             browser.close()
 
-        return all_messages
+        # Determine which messages are shared vs child-specific
+        id_to_children: dict[str, set[str]] = defaultdict(set)
+        id_to_msg: dict[str, dict] = {}
+        id_order: list[str] = []
+
+        for child_name, messages_url, messages in per_child:
+            for m in messages:
+                if m["id"] not in id_to_msg:
+                    id_to_msg[m["id"]] = m
+                    id_order.append(m["id"])
+                    m["_list_url"] = messages_url
+                id_to_children[m["id"]].add(child_name)
+
+        result: list[dict] = []
+        for msg_id in id_order:
+            msg = id_to_msg[msg_id]
+            children = id_to_children[msg_id]
+            msg["child"] = next(iter(children)) if len(children) == 1 else ""
+            result.append(msg)
+
+        return result
 
     def enrich_with_bodies(self, messages: list[dict]) -> None:
         """Click each message to capture body and images. Groups by child to avoid
@@ -366,7 +387,7 @@ class ClassAppScraper:
         """
         inner = data.get("data", {})
 
-        node = inner.get("node", {})
+        node = inner.get("node") or {}
         node_entity_id = str(node.get("id", ""))
         nodes = node.get("messages", {}).get("nodes", [])
 
