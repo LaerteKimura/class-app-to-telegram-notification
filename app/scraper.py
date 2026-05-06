@@ -145,11 +145,10 @@ class ClassAppScraper:
             context.storage_state(path=str(SESSION_FILE))
             browser.close()
 
-        # Determine which messages are shared vs child-specific.
-        # Dedup by ID first; fall back to (subject, sender) fingerprint because
-        # ClassApp may assign different IDs to the same announcement per child.
-        canonical_id_for: dict[str, str] = {}          # msg_id → canonical_id
-        fingerprint_to_canonical: dict[tuple, str] = {} # (subject, sender) → canonical_id
+        # Deduplicate only by exact message ID.
+        # Messages with different IDs are always sent separately, each with their
+        # child label. Only if the exact same ID appears for multiple children is
+        # the message sent once without a label.
         id_to_children: dict[str, set[str]] = defaultdict(set)
         id_to_msg: dict[str, dict] = {}
         id_order: list[str] = []
@@ -157,22 +156,11 @@ class ClassAppScraper:
         for child_name, messages_url, messages in per_child:
             for m in messages:
                 msg_id = m["id"]
-                fp = (m.get("subject", "").strip(), m.get("sender", "").strip())
-
-                if msg_id in canonical_id_for:
-                    canonical = canonical_id_for[msg_id]
-                elif fp in fingerprint_to_canonical:
-                    canonical = fingerprint_to_canonical[fp]
-                    canonical_id_for[msg_id] = canonical
-                else:
-                    canonical = msg_id
-                    canonical_id_for[msg_id] = canonical
-                    fingerprint_to_canonical[fp] = canonical
-                    id_to_msg[canonical] = m
-                    id_order.append(canonical)
+                if msg_id not in id_to_msg:
+                    id_to_msg[msg_id] = m
+                    id_order.append(msg_id)
                     m["_list_url"] = messages_url
-
-                id_to_children[canonical].add(child_name)
+                id_to_children[msg_id].add(child_name)
 
         result: list[dict] = []
         for msg_id in id_order:
