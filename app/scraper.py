@@ -169,6 +169,7 @@ class ClassAppScraper:
             msg["child"] = next(iter(children)) if len(children) == 1 else ""
             result.append(msg)
 
+        result.sort(key=lambda m: m.get("date", ""), reverse=True)
         return result
 
     def enrich_with_bodies(self, messages: list[dict]) -> None:
